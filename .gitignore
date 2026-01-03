@@ -1,0 +1,17 @@
+# C++ main
+main
+main.exe
+*.exe
+*.out
+*.o
+*.obj
+
+# Build directories
+build/
+bin/
+lib/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
