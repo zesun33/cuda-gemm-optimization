@@ -90,6 +90,186 @@ for (int k = 0; k < K; k++) {
 - **Coalescing**: **BAD** - threads in a warp access elements `N` apart
 - **Reuse**: Each column of B is read **M times** (once per output row)
 
+---
+
+### Deep Dive: Memory Coalescing
+
+Memory coalescing is critical for GPU performance. Let's understand **exactly** why one pattern is GOOD and the other is BAD.
+
+#### What is Memory Coalescing?
+
+When 32 threads in a warp access memory simultaneously, the GPU tries to **combine** their requests into as few memory transactions as possible.
+
+**GPU Memory Transaction**: Each transaction fetches **128 bytes** (32 consecutive floats).
+
+**Best case**: 32 threads access consecutive addresses → **1 transaction** (100% bandwidth)  
+**Worst case**: 32 threads access scattered addresses → **32 transactions** (3% bandwidth, 32× slower!)
+
+#### Understanding Our Thread Layout
+
+With `dim3 blockDim(16, 16)`, threads are organized as:
+
+```
+Block layout (16×16 = 256 threads):
+Row 0:  (0,0)  (0,1)  (0,2)  ... (0,15)
+Row 1:  (1,0)  (1,1)  (1,2)  ... (1,15)
+...
+Row 15: (15,0) (15,1) (15,2) ... (15,15)
+```
+
+**CUDA linearizes these for warp assignment** (row-major order):
+- **Warp 0**: threads 0-31 = (0,0) through (1,15) [rows 0-1]
+- **Warp 1**: threads 32-63 = (2,0) through (3,15) [rows 2-3]
+
+Within Warp 0:
+- Threads 0-15: compute C[blockIdx.y*16 + 0][blockIdx.x*16 + 0..15]
+- Threads 16-31: compute C[blockIdx.y*16 + 1][blockIdx.x*16 + 0..15]
+
+---
+
+#### GOOD Pattern: Reading from A (Broadcast)
+
+**What each thread accesses**:
+```cpp
+// Thread computing C[i][j] reads:
+A[i * K + k]  // Element A[row i, column k]
+```
+
+**Example: Warp 0 at iteration k=5**:
+
+```
+Thread 0  (C[0][0]): reads A[0 * K + 5] = A[0][5]
+Thread 1  (C[0][1]): reads A[0 * K + 5] = A[0][5]  ← SAME
+Thread 2  (C[0][2]): reads A[0 * K + 5] = A[0][5]  ← SAME
+...
+Thread 15 (C[0][15]): reads A[0 * K + 5] = A[0][5] ← SAME
+
+Thread 16 (C[1][0]): reads A[1 * K + 5] = A[1][5]
+Thread 17 (C[1][1]): reads A[1 * K + 5] = A[1][5]  ← SAME
+...
+Thread 31 (C[1][15]): reads A[1 * K + 5] = A[1][5] ← SAME
+```
+
+**All threads with the same row index read the SAME address!**
+
+This is called **broadcast** or **uniform access**:
+- GPU fetches `A[0][5]` once and distributes to threads 0-15
+- GPU fetches `A[1][5]` once and distributes to threads 16-31
+
+**Result**: **2 transactions** for 32 threads instead of 32 → **16× more efficient!**
+
+**Why this helps**:
+- L1 cache serves the first request, then immediately serves 15 more from cache
+- Or the memory controller broadcasts the value directly
+- Minimal DRAM traffic
+
+---
+
+#### BAD Pattern: Reading from B (Strided Access)
+
+**What each thread accesses**:
+```cpp
+// Thread computing C[i][j] reads:
+B[k * N + j]  // Element B[row k, column j]
+```
+
+**Example: Warp 0 at iteration k=5**:
+
+```
+Thread 0  (C[0][0]): reads B[5 * N + 0]  ← Address: base + 5*N*4 + 0*4
+Thread 1  (C[0][1]): reads B[5 * N + 1]  ← Address: base + 5*N*4 + 4
+Thread 2  (C[0][2]): reads B[5 * N + 2]  ← Address: base + 5*N*4 + 8
+...
+Thread 15 (C[0][15]): reads B[5 * N + 15] ← Address: base + 5*N*4 + 60
+
+Thread 16 (C[1][0]): reads B[5 * N + 0]  ← SAME as Thread 0
+Thread 17 (C[1][1]): reads B[5 * N + 1]  ← SAME as Thread 1
+...
+```
+
+**Within a single iteration**: Threads 0-15 access **consecutive** addresses (B[5*N+0] through B[5*N+15]). This IS coalesced! ✅
+
+**But the real problem is ACROSS iterations**:
+
+```
+k=0: Warp reads B[0*N + j] (row 0)
+k=1: Warp reads B[1*N + j] (row 1) ← N*4 bytes away from row 0!
+k=2: Warp reads B[2*N + j] (row 2) ← N*4 bytes away from row 1!
+...
+```
+
+**For N=1024**: Each row is **4096 bytes** (1024 floats × 4 bytes) away from the next.
+
+A typical cache line is **128 bytes**, so row k and row k+1 are **32 cache lines apart**!
+
+**The cache cannot hold all these rows**, so we get:
+- Load B[0][j] → evicts from cache before we need it again
+- Load B[1][j] → evicts B[0][j]
+- Load B[2][j] → evicts B[1][j]
+- ...never reuse cached data!
+
+This is called **cache thrashing** or **poor spatial locality**.
+
+---
+
+#### Visual Comparison
+
+**Memory access pattern for A (GOOD)**:
+```
+Iteration k=0: All threads in warp → A[row][0]  (2 addresses)
+Iteration k=1: All threads in warp → A[row][1]  (2 addresses)
+Iteration k=2: All threads in warp → A[row][2]  (2 addresses)
+                ↓ consecutive elements, good cache reuse
+```
+
+**Memory access pattern for B (BAD)**:
+```
+Warp accesses column j across all rows:
+k=0: B[0][j]   ← Load cache line
+k=1: B[1][j]   ← 4KB away, new cache line
+k=2: B[2][j]   ← 4KB away, new cache line 
+k=3: B[3][j]   ← 4KB away, new cache line
+     ↓ No reuse! Each access loads a new cache line
+```
+
+---
+
+#### Quantitative Performance Impact
+
+**For 1024×1024 GEMM on your 3060 Ti**:
+
+**Ideal case (perfect coalescing)**:
+- Bandwidth: 448 GB/s
+- Can sustain: ~112 billion float loads/sec
+
+**Reading from A (GOOD)**:
+- Broadcast pattern → L1 cache hit rate ~95%
+- Effective bandwidth utilization: ~80-90%
+- Minimal DRAM traffic
+
+**Reading from B (BAD)**:
+- Strided access → L1 cache hit rate ~10-20%
+- Effective bandwidth utilization: ~20-30%
+- High DRAM traffic, poor cache reuse
+
+**Overall Naive GEMM**:
+- Achieves only ~25-30% of peak memory bandwidth
+- Bottlenecked by the bad B access pattern
+- This is why we see ~0.1-0.15 TFLOPS instead of 16.2 TFLOPS!
+
+---
+
+#### The Fix (Coming in Lesson 3: Shared Memory Tiling)
+
+We'll fix the B access pattern by:
+1. Loading a **tile** of B into Shared Memory
+2. All threads in the block reuse this tile many times
+3. Amortize the cost of the strided access over many operations
+
+**Expected improvement**: 10-20× speedup! (From ~0.15 to ~2-3 TFLOPS)
+
+---
+
 ### Bottleneck Identification
 
 **For N = 1024, M = K = 1024**:
