@@ -52,11 +52,19 @@ Each thread computes ONE element by:
 
 ## Memory Access Pattern Analysis
 
-### A100 Hardware Specs (Reminder)
-- **DRAM Bandwidth**: 1,555 GB/s
-- **FP32 Peak**: 19.5 TFLOPS
-- **Shared Memory per SM**: 164 KB
-- **L2 Cache**: 40 MB
+### Your GPU Hardware Specs
+
+**RTX 3060 Ti** (Personal PC):
+- **DRAM Bandwidth**: 448 GB/s
+- **FP32 Peak**: 16.2 TFLOPS
+- **Shared Memory per SM**: 100 KB
+- **L2 Cache**: 4 MB
+
+**A5000** (Server):
+- **DRAM Bandwidth**: 768 GB/s
+- **FP32 Peak**: 27.8 TFLOPS
+- **Shared Memory per SM**: 100 KB
+- **L2 Cache**: 6 MB
 
 ### Access Patterns in Naive GEMM
 

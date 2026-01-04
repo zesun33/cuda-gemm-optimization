@@ -79,13 +79,15 @@ AI = (2·N³) / (4·3·N²) = N/6 FLOPs/Byte
 
 **Key Insight**: As `N` increases, AI increases linearly. Larger matrices are more compute-bound.
 
-### Step 2: GPU Hardware Limits (Example: NVIDIA A100)
+### Step 2: GPU Hardware Limits
 
-| Resource | Peak Performance |
-|----------|------------------|
-| **DRAM Bandwidth** | 1,555 GB/s |
-| **FP32 Compute** | 19.5 TFLOPS |
-| **FP16 Tensor Core** | 312 TFLOPS |
+**Your GPUs:**
+
+| Resource | RTX 3060 Ti | A5000 |
+|----------|-------------|-------|
+| **DRAM Bandwidth** | 448 GB/s | 768 GB/s |
+| **FP32 Compute** | 16.2 TFLOPS | 27.8 TFLOPS |
+| **FP16 Tensor Core** | 130 TFLOPS | 222 TFLOPS |
 
 **The "Roof"**:
 ```
@@ -94,27 +96,52 @@ Attainable TFLOPS = min(Peak Compute, Bandwidth × AI)
 
 #### Example: N=1024 (1K × 1K GEMM)
 
+**On RTX 3060 Ti:**
 ```
 AI = 1024 / 6 ≈ 170 FLOPs/Byte
 
-Memory-Bound Limit = 1555 GB/s × 170 = 264 TFLOPS (exceeds peak!)
-Compute-Bound Limit = 19.5 TFLOPS
+Memory-Bound Limit = 448 GB/s × 170 = 76.2 TFLOPS (exceeds peak!)
+Compute-Bound Limit = 16.2 TFLOPS
 
-→ We are COMPUTE BOUND (good!)
+→ We are COMPUTE BOUND at 16.2 TFLOPS
+```
+
+**On A5000:**
+```
+AI = 1024 / 6 ≈ 170 FLOPs/Byte
+
+Memory-Bound Limit = 768 GB/s × 170 = 130.6 TFLOPS (exceeds peak!)
+Compute-Bound Limit = 27.8 TFLOPS
+
+→ We are COMPUTE BOUND at 27.8 TFLOPS
 ```
 
 #### Example: N=128 (Small Matrix)
 
+**On RTX 3060 Ti:**
 ```
 AI = 128 / 6 ≈ 21 FLOPs/Byte
 
-Memory-Bound Limit = 1555 GB/s × 21 = 32 TFLOPS
-Compute-Bound Limit = 19.5 TFLOPS
+Memory-Bound Limit = 448 GB/s × 21 = 9.4 TFLOPS
+Compute-Bound Limit = 16.2 TFLOPS
 
-→ We are COMPUTE BOUND (still good for FP32)
+→ We are MEMORY BOUND at 9.4 TFLOPS
 ```
 
-**Takeaway**: For N ≥ 128, we need to focus on **maximizing instruction throughput** (occupancy, ILP) rather than just bandwidth.
+**On A5000:**
+```
+AI = 128 / 6 ≈ 21 FLOPs/Byte
+
+Memory-Bound Limit = 768 GB/s × 21 = 16.1 TFLOPS
+Compute-Bound Limit = 27.8 TFLOPS
+
+→ We are MEMORY BOUND at 16.1 TFLOPS
+```
+
+**Takeaway**: 
+- **For N ≥ 512**: Both GPUs are compute-bound → focus on occupancy and ILP
+- **For N = 128-256**: Still important to optimize memory (especially on 3060 Ti)
+- **For N ≥ 1024**: Definitely compute-bound → maximize ALU utilization
 
 ### Deep Dive: Why the Bottleneck Shifts
 
@@ -133,12 +160,19 @@ When optimizing GPU code, you're always limited by one of two resources:
 #### Why N ≥ 128 is Compute-Bound
 
 From our calculation above:
+**On RTX 3060 Ti:**
 ```
-N = 128:  Memory can feed 32 TFLOPS, but ALUs only do 19.5 TFLOPS
-N = 1024: Memory can feed 264 TFLOPS, but ALUs only do 19.5 TFLOPS
+N = 128:  Memory can feed 9.4 TFLOPS, ALUs do 16.2 TFLOPS → Memory-bound
+N = 1024: Memory can feed 76.2 TFLOPS, ALUs do 16.2 TFLOPS → Compute-bound
 ```
 
-**Translation**: Even with *perfect* memory efficiency, we're capped at 19.5 TFLOPS because **the ALUs can't execute instructions fast enough**.
+**On A5000:**
+```
+N = 128:  Memory can feed 16.1 TFLOPS, ALUs do 27.8 TFLOPS → Memory-bound  
+N = 1024: Memory can feed 130.6 TFLOPS, ALUs do 27.8 TFLOPS → Compute-bound
+```
+
+**Translation**: For large matrices (N ≥ 512), both GPUs are compute-bound. We're capped by ALU throughput, not memory bandwidth.
 
 #### What This Means for Optimization
 
@@ -217,7 +251,7 @@ C[i][j] = sum;
 | **Memory-Bound** (Small N) | DRAM Bandwidth | Reduce traffic (tiling, caching) |
 | **Compute-Bound** (Large N) | Instruction Throughput | Increase parallelism (occupancy, ILP) |
 
-**For N ≥ 128 with FP32**: We're compute-bound, so:
+**For N ≥ 512 with FP32 on both GPUs**: We're compute-bound, so:
 - ✅ **Do**: Increase threads, unroll loops, use register blocking
 - ❌ **Don't**: Obsess over every byte of DRAM traffic (it's not the bottleneck)
 
@@ -254,12 +288,17 @@ When you see **"Shared Memory per SM"** or **"Registers per SM"**, it means:
 - All threads within a block **share** that SM's resources
 - Different blocks on different SMs **cannot** share data via Shared Memory
 
-**Example**:
-- A100 has **164 KB of Shared Memory per SM**
-- Total across all 108 SMs = 164 KB × 108 ≈ 17.3 MB
-- But a **single thread block** can only use up to 164 KB (because it runs on one SM)
+**Example (RTX 3060 Ti)**:
+- Has **100 KB of Shared Memory per SM**
+- Total across all 38 SMs = 100 KB × 38 = 3.8 MB
+- But a **single thread block** can only use up to 100 KB (because it runs on one SM)
 
-**Implication for occupancy**: If your kernel uses 100 KB of Shared Memory per block, you can only fit **1 block per SM** (164 KB / 100 KB = 1.64). This limits parallelism.
+**Example (A5000)**:
+- Has **100 KB of Shared Memory per SM**
+- Total across all 64 SMs = 100 KB × 64 = 6.4 MB
+- But a **single thread block** can only use up to 100 KB (because it runs on one SM)
+
+**Implication for occupancy (both GPUs)**: If your kernel uses 50 KB of Shared Memory per block, you can only fit **2 blocks per SM** (100 KB / 50 KB = 2). This limits parallelism.
 
 #### CUDA Cores: The Physical Compute Units
 
@@ -282,10 +321,10 @@ SM (Streaming Multiprocessor)
 2. **SMs have more warps resident than can execute at once** (timeslicing)
 3. **The warp scheduler** picks which warp executes on the CUDA cores each cycle
 
-**Example (NVIDIA A100)**:
-- **64 FP32 CUDA cores per SM**
-- Can execute **2 warps simultaneously** (2 × 32 = 64 threads)
-- But each SM can have **64 active warps** resident (2048 threads total)
+**Example (RTX 3060 Ti & A5000 - both have similar SM architecture)**:
+- **128 FP32 CUDA cores per SM**
+- Can execute **4 warps simultaneously** (4 × 32 = 128 threads)
+- But each SM can have **48 active warps** resident (1536 threads total)
 - The scheduler rapidly switches between warps to hide memory latency
 
 **Visualization**:
@@ -696,7 +735,7 @@ Grid
 
 #### L2 Cache (shared across GPU)
 - **Location**: Between all SMs and DRAM
-- **Size**: 40-80 MB (depending on GPU: A100 has 40 MB, H100 has 50 MB)
+- **Size**: 4-6 MB (RTX 3060 Ti: 4 MB, A5000: 6 MB)
 - **Purpose**: Caches data accessed by any SM
 - **Control**: None (fully automatic)
 
@@ -846,23 +885,25 @@ As N increases, the **numerator (N³) grows faster** than the **denominator (N²
 
 ---
 
-#### 2. For a 512×512 GEMM on A100 FP32, are we compute-bound or memory-bound?
+#### 2. For a 512×512 GEMM on RTX 3060 Ti FP32, are we compute-bound or memory-bound?
 
 **Calculation**:
 ```
 AI = N/6 = 512/6 ≈ 85.3 FLOPs/Byte
 
-A100 specs:
-- DRAM Bandwidth: 1555 GB/s
-- FP32 Peak: 19.5 TFLOPS
+RTX 3060 Ti specs:
+- DRAM Bandwidth: 448 GB/s
+- FP32 Peak: 16.2 TFLOPS
 
-Memory-bound limit = 1555 GB/s × 85.3 = 132.6 TFLOPS
-Compute-bound limit = 19.5 TFLOPS
+Memory-bound limit = 448 GB/s × 85.3 = 38.2 TFLOPS
+Compute-bound limit = 16.2 TFLOPS
 
-Bottleneck = min(132.6, 19.5) = 19.5 TFLOPS
+Bottleneck = min(38.2, 16.2) = 16.2 TFLOPS
 ```
 
-**Answer**: **Compute-bound**. Even with perfect memory efficiency, we can't exceed 19.5 TFLOPS because the ALUs are the limiting factor.
+**Answer**: **Compute-bound**. Even with perfect memory efficiency, we can't exceed 16.2 TFLOPS because the ALUs are the limiting factor.
+
+**On A5000**: Same conclusion (27.8 TFLOPS compute vs 65.5 TFLOPS from memory).
 
 ---
 
