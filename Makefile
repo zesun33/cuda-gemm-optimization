@@ -33,8 +33,10 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Compile each .cu file to executable
-$(BUILD_DIR)/%: $(SRC_DIR)/%.cu
-	$(NVCC) $(NVCCFLAGS) -arch=$(ARCH) $< -o $@
+$(BUILD_DIR)/02_gemm_comparison: LDLIBS = -lcublas
+
+$(BUILD_DIR)/%: $(SRC_DIR)/%.cu | $(BUILD_DIR)
+	$(NVCC) $(NVCCFLAGS) -arch=$(ARCH) $< -o $@ $(LDLIBS)
 	@echo "Built: $@"
 
 # Clean
@@ -57,7 +59,7 @@ help:
 	@echo "  help        - Show this message"
 	@echo ""
 	@echo "Variables:"
-	@echo "  ARCH        - GPU architecture (default: sm_80 for A100)"
+	@echo "  ARCH        - GPU architecture (default: sm_86)"
 	@echo "                Set with: make ARCH=sm_86"
 
 .PHONY: all clean run_naive help

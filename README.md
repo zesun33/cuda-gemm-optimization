@@ -1,3 +1,28 @@
+# CUDA GEMM optimization ladder
+
+A reproducible row-major FP32 comparison: naive GEMM, 16×16 and 32×32 shared-memory tiles, and cuBLAS SGEMM with TF32/Tensor Core math disabled.
+
+```bash
+make build/02_gemm_comparison ARCH=sm_86  # choose your GPU architecture
+CUDA_VISIBLE_DEVICES=0 ./scripts/verify.sh
+python3 -m pip install -r requirements-plots.txt
+CUDA_VISIBLE_DEVICES=0 python3 scripts/benchmark.py --out results/my-run
+```
+
+The executable uses visible device 0. Set `CUDA_VISIBLE_DEVICES` to choose a host GPU; on the recorded cluster run it was `4`. `CUDA_ARCH` controls the verification build; the default is `sm_86`. Do not run benchmarks on another user's busy GPU.
+
+## Recorded measurements — RTX A5000, 2026-10-03
+
+![Measured FP32 throughput](results/2026-10-03-rtx-a5000/comparison.png)
+
+At 1024³, median kernel throughput was **1.694 TFLOP/s naive**, **2.194 TFLOP/s tiled16 (1.29×)**, **2.044 TFLOP/s tiled32 (1.21×)**, and **14.075 TFLOP/s strict FP32 cuBLAS (8.31×)**. Small and rectangular cases can be slower with tiling or cuBLAS; inspect all rows rather than assuming every implementation is faster.
+
+- [Raw timing samples and provenance](results/2026-10-03-rtx-a5000/results.json)
+- [Latency, throughput, errors, and speedups](results/2026-10-03-rtx-a5000/summary.csv)
+- [Method and limitations](BENCHMARKS.md)
+
+The existing `01_naive_gemm` remains a standalone learning baseline. Its illustrative output below is not the source of the recorded comparison above.
+
 # Quick Start Guide
 
 ## Compilation
