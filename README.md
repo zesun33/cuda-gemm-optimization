@@ -1,5 +1,26 @@
 # CUDA GEMM optimization ladder
 
+<!-- BEGIN GENERATED PROJECT GUIDE -->
+
+## Purpose and first steps
+
+Compare correctness and measured FP32 throughput across naive, tiled, and cuBLAS GEMM.
+
+**Who it is for:** Learners and GPU engineers comparing matrix-multiplication implementations.
+
+**First task:** Read the recorded comparison, then run the checked GEMM executable on your own selected GPU.
+
+**What to expect:** Correctness checks plus latency/throughput comparisons for naive GEMM, shared-memory tiles, and strict FP32 cuBLAS.
+
+**Current scope:** Implemented CUDA comparison with recorded RTX A5000 measurements. Speedups depend on shape and hardware; later optimizations remain future work.
+
+**Start here:** [Benchmark method and limitations](BENCHMARKS.md).
+
+**Related projects:** [kernel-forge](https://github.com/zesun33/kernel-forge), [cuda-memory-benchmark](https://github.com/zesun33/cuda-memory-benchmark).
+
+[Choose another project](https://github.com/zesun33/personal-projects/blob/main/GETTING_STARTED.md).
+<!-- END GENERATED PROJECT GUIDE -->
+
 A reproducible row-major FP32 comparison: naive GEMM, 16×16 and 32×32 shared-memory tiles, and cuBLAS SGEMM with TF32/Tensor Core math disabled.
 
 ```bash
@@ -75,7 +96,7 @@ nvcc -O3 -arch=sm_80 src/01_naive_gemm.cu -o build/naive_gemm
 ./build/01_naive_gemm 2048 2048 2048   # Large matrix
 ```
 
-## Expected Output
+## Illustrative standalone-baseline output
 
 ```
 =============================================================
@@ -108,15 +129,15 @@ Bandwidth:    1458.32 GB/s
 ## What to Look For
 
 1. **Verification**: Should say "✓ Verification PASSED!"
-2. **Performance**: Expected 100-300 GFLOPS (~0.5-1.5% of peak)
-3. **Efficiency**: Very low (1-2%) - this is normal for naive implementation
+2. **Performance**: Compare recorded samples for the same GPU, matrix shape, and measurement method.
+3. **Efficiency**: Treat peak-throughput ratios as a model-dependent comparison; they do not identify a bottleneck by themselves.
 
 ## Next Steps
 
-After running this kernel, proceed to Lesson 3 where we'll:
+After inspecting the checked comparison, further study can:
 - Profile with Nsight Compute to identify bottlenecks
-- Implement Shared Memory Tiling
-- Achieve 10-20× speedup
+- Extend the existing shared-memory cases with register tiling
+- Measure speedups or slowdowns against the same checked baselines
 
 ---
 
